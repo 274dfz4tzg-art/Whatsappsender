@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>WhatsApp Lead Sender</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--bg:#f6f7f5;--card:#fff;--tx:#1b1f1d;--mu:#667069;--bd:#dde2de;--ac:#128c4a;--act:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#121513;--card:#1c211e;--tx:#e8ece9;--mu:#8e9a92;--bd:#2d352f;--ac:#25b866;--act:#08150d}}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:720px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 4px}.mu{color:var(--mu);font-size:13px}
+.box{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px;margin:12px 0}
+textarea,input[type=search],input[type=text],select{box-sizing:border-box;border:1px solid var(--bd);border-radius:8px;padding:8px;background:var(--bg);color:var(--tx);font:inherit}
+textarea,input[type=search]{width:100%}textarea{min-height:120px;resize:vertical}
+button,.go{background:var(--ac);color:var(--act);border:0;border-radius:8px;padding:9px 14px;font:600 14px system-ui,sans-serif;cursor:pointer;text-decoration:none;display:inline-block}
+button.alt{background:transparent;color:var(--tx);border:1px solid var(--bd)}
+.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:10px 0}.grid label{display:block;font-size:12px;color:var(--mu)}.grid select,.grid input{width:100%}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--bd)}
+.row:last-child{border:0}.row.done{opacity:.45}.row b{display:block}
+#list{background:var(--card);border:1px solid var(--bd);border-radius:12px;overflow:hidden}
+[hidden]{display:none!important}
+</style></head><body><main>
+<h1>WhatsApp Lead Sender</h1>
+<div class="mu">Upload your lead sheet (.xlsx, .xls, .csv). Phones are cleaned, fixed and de-duplicated in your browser – your leads never leave your device.</div>
+
+<div class="box">
+<input type="file" id="file" accept=".csv,.tsv,.txt,.xlsx,.xls">
+<div id="map" hidden>
+<div class="grid">
+<div><label>Name column</label><select id="mn"></select></div>
+<div><label>Phone column</label><select id="m1"></select></div>
+<div><label>Backup phone column</label><select id="m2"></select></div>
+<div><label>Default country code</label><input type="text" id="cc" value="971"></div>
+</div>
+<button id="clean">Clean &amp; build sender ▶</button>
+</div>
+<div id="rep" class="mu" style="margin-top:10px"></div>
+<details id="badbox" hidden><summary class="mu">Skipped rows</summary><div id="bad" class="mu"></div></details>
+</div>
+
+<div id="app" hidden>
+<div class="mu" id="stats"></div>
+<div class="box">
+<label class="mu">Message – <code>{name}</code> becomes each contact’s first name</label>
+<textarea id="msg">Hi {name} 👋
+
+🌿 The FIRST freehold farmhouse in Dubai is here.
+
+✅ Full title deed
+✅ Ready for construction
+✅ Monthly income + short-term rental returns
+✅ Hydroponic farming on your own land
+
+Plots are limited. Want the brochure? Reply YES 🏡</textarea>
+<div class="bar">
+<button id="next">Open next unsent ▶</button>
+<button class="alt" id="reset">Reset sent marks</button>
+<button class="alt" id="dl">Download cleaned CSV</button>
+<select id="mode"><option value="app">Open in WhatsApp app</option><option value="web">Open in WhatsApp Web</option><option value="wa">wa.me (slow)</option></select>
+</div></div>
+<input type="search" id="q" placeholder="Search name or number">
+<label class="mu" style="display:block;margin:8px 0"><input type="checkbox" id="hide"> Hide sent</label>
+<div id="list"></div>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const ls={get:(k,d)=>{try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v)}catch(e){return d}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
+let L=ls.get('wa_list',[]),sent=ls.get('wa_sent',{}),hdr=[],data=[];
+
+/* ---------- cleaning ---------- */
+function normOne(s,cc){
+  let raw=s.trim(),d=raw.replace(/\D/g,'');if(!d)return{e:'no digits'};
+  if(d.startsWith('00'))d=d.slice(2);
+  else if(d.startsWith('0')&&!raw.startsWith('+'))d=cc+d.slice(1);
+  else if(cc==='971'&&/^5\d{8}$/.test(d))d='971'+d;
+  if(d.startsWith('9710'))d='971'+d.slice(4);
+  if(d.startsWith('971')){if(!/^9715\d{8}$/.test(d))return{e:'UAE landline / invalid (no WhatsApp)'}}
+  else if(d.length<10||d.length>15)return{e:'wrong length'};
+  if(/(\d)\1{6,}/.test(d)||/1234567890/.test(d))return{e:'fake pattern'};
+  return{p:d};
+}
+function firstName(v){
+  let t=String(v??'').trim();if(!t||t.includes('@'))return'';
+  let w=t.split(/\s+/);if(/^(mr|mrs|ms|miss|dr|eng|prof)\.?$/i.test(w[0])&&w[1])w.shift();
+  let s=w[0].replace(/^[^\p{L}]+|[^\p{L}]+$/gu,'');
+  if(/^[a-z]+$/.test(s)||/^[A-Z]{2,}$/.test(s))s=s[0].toUpperCase()+s.slice(1).toLowerCase();
+  return s.length>20?'':s;
+}
+function guess(){
+  const h=hdr.map(x=>String(x).toLowerCase());
+  const idx=re=>h.findIndex(x=>re.test(x));
+  let ph=h.map((x,i)=>/phone|mobile|whatsapp|cell|tel|contact|number|مو/.test(x)?i:-1).filter(i=>i>=0);
+  if(!ph.length){ // fall back to content scan
+    let best=-1,sc=0;hdr.forEach((_,c)=>{const v=data.slice(0,50).map(r=>String(r[c]??'').replace(/\D/g,''));const s=v.filter(x=>x.length>=8&&x.length<=15).length;if(s>sc){sc=s;best=c}});
+    if(best>=0)ph=[best];
+  }
+  let n=idx(/^(full|first|client|customer|lead|contact)?\s*name/);if(n<0)n=idx(/name/);
+  return{n,p1:ph[0]??-1,p2:ph[1]??-1};
+}
+function fillSel(id,val,none){
+  $(id).innerHTML=(none?'<option value="-1">— none —</option>':'')+hdr.map((h,i)=>`<option value="${i}">${String(h||'Column '+(i+1)).replace(/</g,'&lt;')}</option>`).join('');
+  $(id).value=val;
+}
+$('file').onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;
+  const wb=XLSX.read(await f.arrayBuffer(),{type:'array',raw:true});
+  const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:''}).filter(r=>r.some(c=>String(c).trim()));
+  if(rows.length<2){$('rep').textContent='That file looks empty.';return}
+  hdr=rows[0];data=rows.slice(1);
+  const g=guess();fillSel('mn',g.n,true);fillSel('m1',g.p1,true);fillSel('m2',g.p2,true);
+  $('map').hidden=false;$('rep').textContent=data.length+' rows found. Check the columns below, then clean.';
+};
+$('clean').onclick=()=>{
+  const nc=+$('mn').value,p1=+$('m1').value,p2=+$('m2').value,cc=$('cc').value.replace(/\D/g,'')||'971';
+  if(p1<0&&p2<0)return alert('Pick a phone column first.');
+  const seen=new Set(),out=[],bad=[];let dup=0;
+  data.forEach((r,i)=>{
+    const nm=nc>=0?firstName(r[nc]):'';let ok=null,why='no phone';
+    for(const c of [p1,p2]){if(c<0||ok)continue;
+      for(const part of String(r[c]??'').split(/[\/;,|\n]+/)){if(!part.trim())continue;const x=normOne(part,cc);if(x.p){ok=x.p;break}why=x.e}}
+    if(!ok){bad.push(`Row ${i+2}: ${nm||'(no name)'} – ${why}`);return}
+    if(seen.has(ok)){dup++;return}seen.add(ok);out.push({n:nm,p:ok});
+  });
+  L=out;ls.set('wa_list',L);
+  $('rep').textContent=`✅ ${out.length} WhatsApp-ready · ${dup} duplicates removed · ${bad.length} skipped`;
+  $('bad').innerHTML=bad.slice(0,200).map(x=>x.replace(/</g,'&lt;')).join('<br>');$('badbox').hidden=!bad.length;
+  $('map').hidden=true;render();
+};
+
+/* ---------- sender ---------- */
+const msg=$('msg');
+const m=ls.get('wa_msg3',null);if(m)msg.value=m;
+msg.oninput=()=>ls.set('wa_msg3',msg.value);
+$('mode').value=ls.get('wa_mode','app');$('mode').onchange=()=>ls.set('wa_mode',$('mode').value);
+const link=c=>{const t=encodeURIComponent(msg.value.split('{name}').join(c.n||'there')),k=$('mode').value;
+  return k==='app'?'whatsapp://send?phone='+c.p+'&text='+t:k==='web'?'https://web.whatsapp.com/send?phone='+c.p+'&text='+t:'https://wa.me/'+c.p+'?text='+t};
+const go=c=>{const a=document.createElement('a');a.href=link(c);a.target=$('mode').value==='web'?'wa':'_blank';document.body.append(a);a.click();a.remove()};
+function stats(){const s=L.filter(c=>sent[c.p]).length;$('stats').textContent=L.length+' WhatsApp-ready numbers · '+s+' sent · '+(L.length-s)+' to go'}
+function render(){
+  $('app').hidden=!L.length;if(!L.length)return;
+  const q=$('q').value.toLowerCase(),h=$('hide').checked,list=$('list');list.textContent='';
+  L.forEach(c=>{
+    if(h&&sent[c.p])return;if(q&&!(c.n.toLowerCase().includes(q)||c.p.includes(q)))return;
+    const r=document.createElement('div');r.className='row'+(sent[c.p]?' done':'');
+    const t=document.createElement('div'),b=document.createElement('b'),s=document.createElement('span');
+    b.textContent=c.n||'(no name)';s.className='mu';s.textContent='+'+c.p;t.append(b,s);
+    const a=document.createElement('a');a.className='go';a.target=$('mode').value==='web'?'wa':'_blank';a.textContent=sent[c.p]?'Resend':'Send';
+    a.onmousedown=a.ontouchstart=()=>{a.href=link(c);a.target=$('mode').value==='web'?'wa':'_blank'};
+    a.onclick=()=>{a.href=link(c);sent[c.p]=1;ls.set('wa_sent',sent);r.classList.add('done');a.textContent='Resend';stats()};
+    r.append(t,a);list.append(r);
+  });stats();
+}
+$('next').onclick=()=>{const c=L.find(x=>!sent[x.p]);if(!c)return alert('All done!');go(c);sent[c.p]=1;ls.set('wa_sent',sent);render()};
+$('reset').onclick=()=>{if(confirm('Clear all sent marks?')){sent={};ls.set('wa_sent',sent);render()}};
+$('dl').onclick=()=>{const csv='\ufeffName,Phone\n'+L.map(c=>'"'+c.n.replace(/"/g,'""')+'",'+c.p).join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='cleaned-leads.csv';a.click()};
+$('q').oninput=$('hide').onchange=render;
+render();
+</script></body></html>
